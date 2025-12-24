@@ -217,8 +217,8 @@ const BASE_DESKTOP = {
 
 const BASE_MOBILE = {
   w: 420,
-  h: 740,
-  groundY: 640,
+  h: 660,
+  groundY: 560,
   pw: 42,
   ph: 58,
 
@@ -1006,7 +1006,7 @@ export default function PlayClient() {
                 maxWidth: isMobile ? 520 : 900,
                 aspectRatio: `${baseRef.current.w} / ${baseRef.current.h}`,
                 // 모바일 세로는 flex-1로 꽉 차게, 데스크톱은 비율 박스만
-                height: isMobile && isPortrait ? "100%" : "auto",
+                height: isMobile && isPortrait ? "calc(100svh - 140px)" : undefined,
                 overflow: "hidden",
               }}
             >

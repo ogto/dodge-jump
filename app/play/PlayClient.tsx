@@ -2,7 +2,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type Keys = { left: boolean; right: boolean; jump: boolean };
 
@@ -193,28 +193,46 @@ type Ball = {
   trailPts: TrailPt[];
 };
 
-/* ================= base config (scaled) ================= */
-const BASE = {
+/* ================= base configs ================= */
+const BASE_DESKTOP = {
   w: 900,
   h: 520,
   groundY: 420,
-
   pw: 34,
   ph: 48,
 
-  // player physics (base)
   accel: 3000,
   friction: 2300,
   maxSpeed: 390,
+  gravity: 2100,
 
   jump1: -640,
   jump2: -560,
 
-  gravity: 2100,
-
   dashSpeed: 980,
   dashActive: 0.12,
   dashInvuln: 0.08,
+  dashCooldown: 0.75,
+};
+
+const BASE_MOBILE = {
+  w: 420,
+  h: 740,
+  groundY: 640,
+  pw: 42,
+  ph: 58,
+
+  accel: 2600,
+  friction: 2200,
+  maxSpeed: 360,
+  gravity: 1900,
+
+  jump1: -620,
+  jump2: -540,
+
+  dashSpeed: 900,
+  dashActive: 0.12,
+  dashInvuln: 0.09,
   dashCooldown: 0.75,
 };
 
@@ -229,14 +247,12 @@ export default function PlayClient() {
   const [scoreUI, setScoreUI] = useState(0);
   const [bestUI, setBestUI] = useState(0);
 
-  // 모바일(포인터 coarse) 감지
   const [isMobile, setIsMobile] = useState(false);
+  const [isPortrait, setIsPortrait] = useState(false);
 
-  // 렌더 최소화용 ref
   const scoreRef = useRef(0);
   const bestRef = useRef(0);
 
-  // 대시/무적
   const dashRef = useRef({
     activeT: 0,
     cooldownT: 0,
@@ -250,21 +266,27 @@ export default function PlayClient() {
     []
   );
 
-  // “현재 화면 스케일”(BASE 대비)
+  const baseRef = useRef(BASE_DESKTOP);
   const scaleRef = useRef(1);
+
+  // 모바일 D-pad 상태(눌림 유지)
+  const dpadRef = useRef({
+    left: false,
+    right: false,
+  });
 
   const stateRef = useRef({
     startedAt: 0,
     lastT: 0,
 
-    w: BASE.w,
-    h: BASE.h,
-    groundY: BASE.groundY,
+    w: BASE_DESKTOP.w,
+    h: BASE_DESKTOP.h,
+    groundY: BASE_DESKTOP.groundY,
 
-    px: BASE.w / 2,
-    py: BASE.groundY,
-    pw: BASE.pw,
-    ph: BASE.ph,
+    px: BASE_DESKTOP.w / 2,
+    py: BASE_DESKTOP.groundY,
+    pw: BASE_DESKTOP.pw,
+    ph: BASE_DESKTOP.ph,
     vx: 0,
     vy: 0,
     onGround: true,
@@ -272,75 +294,6 @@ export default function PlayClient() {
 
     balls: [] as Ball[],
   });
-
-  /* ================= responsive sizing =================
-     - stage 영역 폭에 맞춰 w/h를 계산
-     - scale이 바뀌면 위치/속도도 비율로 변환해서 체감 동일 유지
-  ======================================================= */
-  const applyResize = () => {
-    const stage = stageRef.current;
-    const canvas = canvasRef.current;
-    if (!stage || !canvas) return;
-
-    const rect = stage.getBoundingClientRect();
-    const maxW = 900;
-    const minW = 320;
-
-    // container 폭 기반
-    const displayW = clamp(Math.floor(rect.width), minW, maxW);
-    const aspect = BASE.h / BASE.w;
-    const displayH = Math.floor(displayW * aspect);
-
-    const newScale = displayW / BASE.w;
-    const oldScale = scaleRef.current || 1;
-    const ratio = newScale / oldScale;
-
-    scaleRef.current = newScale;
-
-    // state 스케일 적용(연속성 유지)
-    const s = stateRef.current;
-    s.w = displayW;
-    s.h = displayH;
-    s.groundY = Math.floor(BASE.groundY * newScale);
-
-    // 플레이어 사이즈/위치/속도 스케일 변환
-    s.pw = BASE.pw * newScale;
-    s.ph = BASE.ph * newScale;
-
-    s.px *= ratio;
-    s.py *= ratio;
-    s.vx *= ratio;
-    s.vy *= ratio;
-
-    // 공들도 스케일 변환
-    for (const b of s.balls) {
-      b.x *= ratio;
-      b.y *= ratio;
-      b.r *= ratio;
-      b.vx *= ratio;
-      b.vy *= ratio;
-      // 중력도 길이 스케일에 맞춤 (가속은 px/s^2 이라 scale 적용)
-      b.g *= ratio;
-
-      for (const p of b.trailPts) {
-        p.x *= ratio;
-        p.y *= ratio;
-      }
-    }
-
-    // canvas 실제 픽셀 크기 반영
-    canvas.width = Math.floor(displayW * dpr);
-    canvas.height = Math.floor(displayH * dpr);
-    canvas.style.width = `${displayW}px`;
-    canvas.style.height = `${displayH}px`;
-
-    const ctx = canvas.getContext("2d");
-    if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    // 바닥 아래로 떨어진 경우 보정
-    s.px = clamp(s.px, s.pw / 2, s.w - s.pw / 2);
-    if (s.py > s.groundY) s.py = s.groundY;
-  };
 
   /* ================= difficulty ================= */
   function difficultyT(scoreSec: number) {
@@ -350,20 +303,19 @@ export default function PlayClient() {
 
   function currentParams(scoreSec: number) {
     const t = difficultyT(scoreSec);
+    const sc = scaleRef.current || 1;
+
+    const mobileEase = isMobile ? 0.88 : 1.0;
 
     const base = Math.round(lerp(3, 8, t));
     const extra = Math.min(6, Math.floor(Math.max(0, scoreSec - 25) / 18));
-    const targetBalls = clamp(base + extra, 3, 14);
+    const targetBalls = clamp((base + extra) - (isMobile ? 1 : 0), 2, 14);
 
-    // wind/velocity/gravity도 scale 반영
-    const sc = scaleRef.current || 1;
-
-    const windA = (lerp(18, 130, t) + Math.min(60, extra * 10)) * sc;
-    const baseSpeed = (lerp(240, 420, t) + Math.min(140, extra * 18)) * sc;
+    const windA = (lerp(16, 120, t) + Math.min(56, extra * 10)) * sc * mobileEase;
+    const baseSpeed = (lerp(220, 400, t) + Math.min(120, extra * 18)) * sc * mobileEase;
 
     const fillProb = lerp(0.02, 0.09, t) + Math.min(0.04, extra * 0.004);
-
-    const gAdd = (lerp(0, 700, t) + Math.min(500, extra * 80)) * sc;
+    const gAdd = (lerp(0, 650, t) + Math.min(460, extra * 80)) * sc * mobileEase;
 
     return { t, targetBalls, windA, baseSpeed, fillProb, gAdd, extra };
   }
@@ -380,7 +332,7 @@ export default function PlayClient() {
     const drag = type.dragMin + Math.random() * (type.dragMax - type.dragMin);
 
     const preferDrop =
-      type.id === "dropper" ? lerp(0.2, 0.62, t) : lerp(0.18, 0.38, t);
+      type.id === "dropper" ? lerp(0.18, 0.56, t) : lerp(0.16, 0.34, t);
     const roll = Math.random();
 
     let x = 0,
@@ -390,28 +342,28 @@ export default function PlayClient() {
     let flowDir: -1 | 1 = 1;
 
     if (roll < preferDrop) {
-      x = 70 * sc + Math.random() * (s.w - 140 * sc);
-      y = -r - 50 * sc;
+      x = 50 * sc + Math.random() * (s.w - 100 * sc);
+      y = -r - 80 * sc;
 
       flowDir = Math.random() < 0.5 ? -1 : 1;
 
-      vx = flowDir * lerp(120, 240, t) * type.vxScale * sc;
-      vy = lerp(80, 190, t) * type.vyScale * sc;
+      vx = flowDir * lerp(100, 210, t) * type.vxScale * sc;
+      vy = lerp(80, 180, t) * type.vyScale * sc;
     } else {
       const fromLeft = Math.random() < 0.5;
       flowDir = fromLeft ? 1 : -1;
-
-      x = fromLeft ? -r - 50 * sc : s.w + r + 50 * sc;
+      x = fromLeft ? -r - 80 * sc : s.w + r + 80 * sc;
 
       const low =
-        Math.random() < lerp(0.88, 0.75, t)
+        Math.random() < lerp(0.9, 0.78, t)
           ? Math.random() * (90 * sc)
-          : 90 * sc + Math.random() * (80 * sc);
+          : 90 * sc + Math.random() * (90 * sc);
+
       y = s.groundY - r - low;
 
       vx =
         flowDir *
-        (baseSpeed + Math.random() * lerp(140, 260, t) * sc) *
+        (baseSpeed + Math.random() * lerp(120, 240, t) * sc) *
         type.vxScale;
       vy = (-60 + Math.random() * 120) * type.vyScale * 0.55 * sc;
     }
@@ -426,9 +378,7 @@ export default function PlayClient() {
       rest,
       fric,
       drag,
-      g:
-        (type.gMin + Math.random() * (type.gMax - type.gMin)) * sc +
-        gAdd,
+      g: (type.gMin + Math.random() * (type.gMax - type.gMin)) * sc + gAdd,
       flowDir,
       color: type.color,
       glow: type.glow,
@@ -446,7 +396,6 @@ export default function PlayClient() {
     s.startedAt = now;
     s.lastT = now;
 
-    // 현재 스케일 기반 중앙 배치
     s.px = s.w / 2;
     s.py = s.groundY;
     s.vx = 0;
@@ -465,6 +414,9 @@ export default function PlayClient() {
     dashRef.current.dir = 1;
     dashRef.current.request = false;
 
+    dpadRef.current.left = false;
+    dpadRef.current.right = false;
+
     spawnBall(0);
     spawnBall(0);
     spawnBall(0);
@@ -476,6 +428,86 @@ export default function PlayClient() {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(step);
   };
+
+  /* ================= responsive sizing =================
+     - 모바일 세로: 캔버스 높이를 100svh에서 컨트롤바 높이만큼 빼서 고정
+     - 스크롤 절대 발생 안 하게(overflow hidden 전제)
+  ======================================================= */
+  const applyResize = () => {
+  const stage = stageRef.current;
+  const canvas = canvasRef.current;
+  if (!stage || !canvas) return;
+
+  const base = baseRef.current;
+  const rect = stage.getBoundingClientRect();
+
+  const availW = Math.floor(rect.width);
+  const availH = Math.floor(rect.height); // ✅ 이제 h-full 덕분에 값이 생김
+
+  // ✅ 모바일 세로일 때: 높이 우선
+  let displayW: number;
+  let displayH: number;
+
+  if (isMobile && isPortrait) {
+    // 1) 높이를 꽉 채운다고 가정하고, 그 비율에 맞는 폭 계산
+    const byH_W = Math.floor(availH * (base.w / base.h));
+    if (byH_W <= availW) {
+      displayH = availH;
+      displayW = byH_W;
+    } else {
+      // 2) 폭이 부족하면, 폭 기준으로 축소
+      displayW = availW;
+      displayH = Math.floor(displayW * (base.h / base.w));
+    }
+  } else {
+    // 데스크톱/가로는 기존처럼 폭 우선
+    displayW = clamp(availW, 320, base.w);
+    displayH = Math.floor(displayW * (base.h / base.w));
+  }
+
+  const newScale = displayW / base.w;
+  const oldScale = scaleRef.current || 1;
+  const ratio = newScale / oldScale;
+  scaleRef.current = newScale;
+
+  const s = stateRef.current;
+  s.w = displayW;
+  s.h = displayH;
+  s.groundY = Math.floor(base.groundY * newScale);
+
+  s.pw = base.pw * newScale;
+  s.ph = base.ph * newScale;
+
+  s.px *= ratio;
+  s.py *= ratio;
+  s.vx *= ratio;
+  s.vy *= ratio;
+
+  for (const b of s.balls) {
+    b.x *= ratio;
+    b.y *= ratio;
+    b.r *= ratio;
+    b.vx *= ratio;
+    b.vy *= ratio;
+    b.g *= ratio;
+    for (const p of b.trailPts) {
+      p.x *= ratio;
+      p.y *= ratio;
+    }
+  }
+
+  canvas.width = Math.floor(displayW * dpr);
+  canvas.height = Math.floor(displayH * dpr);
+  canvas.style.width = `${displayW}px`;
+  canvas.style.height = `${displayH}px`;
+
+  const ctx = canvas.getContext("2d");
+  if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  s.px = clamp(s.px, s.pw / 2, s.w - s.pw / 2);
+  if (s.py > s.groundY) s.py = s.groundY;
+};
+
 
   /* ================= rendering ================= */
   const drawBackground = (ctx: CanvasRenderingContext2D) => {
@@ -555,7 +587,7 @@ export default function PlayClient() {
       const dots = 2 - s.jumpCount;
       for (let i = 0; i < dots; i++) {
         ctx.beginPath();
-        ctx.arc(s.px - 10 + i * 10, py - 8, 3, 0, Math.PI * 2);
+        ctx.arc(s.px - 12 + i * 12, py - 10, 3, 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.globalAlpha = 1;
@@ -601,7 +633,7 @@ export default function PlayClient() {
         if (b.vy > 0) b.vy = -b.vy * b.rest;
         b.vx *= 1 - b.fric;
 
-        const minVx = 120 * (scaleRef.current || 1);
+        const minVx = 110 * (scaleRef.current || 1);
         if (Math.abs(b.vx) < minVx) b.vx = Math.sign(b.vx || b.flowDir) * minVx;
       }
 
@@ -627,10 +659,10 @@ export default function PlayClient() {
     const { targetBalls, fillProb } = currentParams(scoreSec);
 
     while (s.balls.length < targetBalls) {
-      if (Math.random() < fillProb || s.balls.length < 3) spawnBall(scoreSec);
+      if (Math.random() < fillProb || s.balls.length < 2) spawnBall(scoreSec);
       else break;
     }
-    while (s.balls.length < 3) spawnBall(scoreSec);
+    while (s.balls.length < 2) spawnBall(scoreSec);
   };
 
   const gameOver = (finalScore: number) => {
@@ -668,9 +700,17 @@ export default function PlayClient() {
     dashRef.current.activeT = Math.max(0, dashRef.current.activeT - dt);
     dashRef.current.invulnT = Math.max(0, dashRef.current.invulnT - dt);
 
-    const keys = keysRef.current;
-    if (keys.left) dashRef.current.dir = -1;
-    if (keys.right) dashRef.current.dir = 1;
+    // 모바일 D-pad -> keys 반영(매 프레임)
+    if (isMobile) {
+      keysRef.current.left = dpadRef.current.left;
+      keysRef.current.right = dpadRef.current.right;
+      if (keysRef.current.left) dashRef.current.dir = -1;
+      if (keysRef.current.right) dashRef.current.dir = 1;
+    } else {
+      const keys = keysRef.current;
+      if (keys.left) dashRef.current.dir = -1;
+      if (keys.right) dashRef.current.dir = 1;
+    }
 
     // dash trigger
     if (
@@ -679,22 +719,24 @@ export default function PlayClient() {
       dashRef.current.activeT <= 0
     ) {
       dashRef.current.request = false;
-      dashRef.current.activeT = BASE.dashActive;
-      dashRef.current.invulnT = BASE.dashInvuln;
-      dashRef.current.cooldownT = BASE.dashCooldown;
+      dashRef.current.activeT = baseRef.current.dashActive;
+      dashRef.current.invulnT = baseRef.current.dashInvuln;
+      dashRef.current.cooldownT = baseRef.current.dashCooldown;
     } else {
       dashRef.current.request = false;
     }
 
     const dashOn = dashRef.current.activeT > 0;
     const sc = scaleRef.current || 1;
+    const base = baseRef.current;
 
-    // player move constants scaled
-    const accel = BASE.accel * sc;
-    const friction = BASE.friction * sc;
-    const maxSpeed = BASE.maxSpeed * sc;
-
+    // move
     if (!dashOn) {
+      const accel = base.accel * sc;
+      const friction = base.friction * sc;
+      const maxSpeed = base.maxSpeed * sc;
+
+      const keys = keysRef.current;
       if (keys.left) s.vx -= accel * dt;
       if (keys.right) s.vx += accel * dt;
 
@@ -705,13 +747,13 @@ export default function PlayClient() {
 
       s.vx = clamp(s.vx, -maxSpeed, maxSpeed);
     } else {
-      s.vx = dashRef.current.dir * BASE.dashSpeed * sc;
+      s.vx = dashRef.current.dir * base.dashSpeed * sc;
     }
 
-    // jump (double)
-    if (keys.jump) {
+    // jump
+    if (keysRef.current.jump) {
       if (s.onGround || s.jumpCount < 2) {
-        s.vy = (s.jumpCount === 0 ? BASE.jump1 : BASE.jump2) * sc;
+        s.vy = (s.jumpCount === 0 ? base.jump1 : base.jump2) * sc;
         s.jumpCount += 1;
         s.onGround = false;
         keysRef.current.jump = false;
@@ -721,7 +763,7 @@ export default function PlayClient() {
     }
 
     // gravity
-    s.vy += BASE.gravity * sc * dt;
+    s.vy += base.gravity * sc * dt;
 
     // integrate
     s.px += s.vx * dt;
@@ -755,32 +797,46 @@ export default function PlayClient() {
     rafRef.current = requestAnimationFrame(step);
   };
 
-  /* ================= mobile detection ================= */
+  /* ================= device detection ================= */
   useEffect(() => {
     if (typeof window === "undefined") return;
 
+    // mobile coarse pointer
     type MQLLegacy = MediaQueryList & {
       addListener?: (listener: (e: MediaQueryListEvent) => void) => void;
       removeListener?: (listener: (e: MediaQueryListEvent) => void) => void;
     };
-
     const mq = window.matchMedia("(pointer: coarse)") as MQLLegacy;
 
-    const apply = () => setIsMobile(Boolean(mq.matches));
-    apply();
+    const applyMobile = () => setIsMobile(Boolean(mq.matches));
+    applyMobile();
 
-    const onChange = () => apply();
+    const onChange = () => applyMobile();
 
-    // 최신 브라우저
-    if (mq.addEventListener) {
-      mq.addEventListener("change", onChange);
-      return () => mq.removeEventListener?.("change", onChange);
-    }
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else mq.addListener?.(onChange);
 
-    // 구형 Safari
-    mq.addListener?.(onChange);
-    return () => mq.removeListener?.(onChange);
+    const applyPortrait = () => {
+      const portrait = window.innerHeight >= window.innerWidth;
+      setIsPortrait(portrait);
+    };
+    applyPortrait();
+    window.addEventListener("resize", applyPortrait);
+
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", onChange);
+      else mq.removeListener?.(onChange);
+      window.removeEventListener("resize", applyPortrait);
+    };
   }, []);
+
+  // base 선택: 모바일+세로면 세로 base 사용
+  useEffect(() => {
+    baseRef.current = isMobile && isPortrait ? BASE_MOBILE : BASE_DESKTOP;
+    applyResize();
+    init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobile, isPortrait]);
 
   /* ================= keyboard controls (PC) ================= */
   useEffect(() => {
@@ -799,10 +855,7 @@ export default function PlayClient() {
 
       if (e.code === "Space") keysRef.current.jump = true;
 
-      if (e.code === "ShiftLeft" || e.code === "ShiftRight") {
-        dashRef.current.request = true;
-      }
-
+      if (e.code === "ShiftLeft" || e.code === "ShiftRight") dashRef.current.request = true;
       if (e.code === "Enter") restart();
     };
 
@@ -826,14 +879,11 @@ export default function PlayClient() {
     const stage = stageRef.current;
     if (!canvas || !stage) return;
 
-    // 최초 사이즈 적용 후 init
     applyResize();
     init();
     rafRef.current = requestAnimationFrame(step);
 
-    const ro = new ResizeObserver(() => {
-      applyResize();
-    });
+    const ro = new ResizeObserver(() => applyResize());
     ro.observe(stage);
 
     const onRotate = () => applyResize();
@@ -847,218 +897,292 @@ export default function PlayClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dpr]);
 
-  /* ================= mobile one-hand input =================
-     - 화면 터치: 좌/우 이동
-     - 버튼: 점프/대시
-     - 스크롤/줌 방지: touchAction none + preventDefault
-  ========================================================== */
-  const activeMoveRef = useRef<"left" | "right" | null>(null);
+  // ✅ 스크롤/바운스/줌 방지(모바일에서 확실히)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const el = document.documentElement;
+    const body = document.body;
 
-  const setMove = (dir: "left" | "right" | null) => {
-    activeMoveRef.current = dir;
-    keysRef.current.left = dir === "left";
-    keysRef.current.right = dir === "right";
-  };
+    const prevHtmlOverflow = el.style.overflow;
+    const prevBodyOverflow = body.style.overflow;
+    const prevTouchAction = body.style.touchAction;
+    const prevOverscroll = body.style.overscrollBehavior;
 
-  const handleMovePointerDown = (e: React.PointerEvent) => {
-    if (!isMobile) return;
-    if (isGameOver) {
-      restart();
-      return;
-    }
-    // 버튼 위 터치면 무시(버튼이 stopPropagation 할 거라 안전)
-    const stage = stageRef.current;
-    if (!stage) return;
-    const rect = stage.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const isLeft = x < rect.width / 2;
-    setMove(isLeft ? "left" : "right");
-  };
+    el.style.overflow = "hidden";
+    body.style.overflow = "hidden";
+    body.style.touchAction = "none";
+    body.style.overscrollBehavior = "none";
 
-  const handleMovePointerUp = () => {
-    if (!isMobile) return;
-    setMove(null);
-  };
+    // 더블탭 줌/핀치 기본 동작 막기(사파리 포함)
+    const prevent = (e: TouchEvent) => {
+      // 버튼 클릭 자체는 pointer로 처리하니, 터치 스크롤/줌만 차단
+      if (e.cancelable) e.preventDefault();
+    };
+    window.addEventListener("touchmove", prevent, { passive: false });
 
+    return () => {
+      el.style.overflow = prevHtmlOverflow;
+      body.style.overflow = prevBodyOverflow;
+      body.style.touchAction = prevTouchAction;
+      body.style.overscrollBehavior = prevOverscroll;
+      window.removeEventListener("touchmove", prevent as any);
+    };
+  }, []);
+
+  /* ================= mobile actions ================= */
   const tapJump = () => {
-    if (isGameOver) {
-      restart();
-      return;
-    }
+    if (isGameOver) return restart();
     keysRef.current.jump = true;
-    // 다음 프레임에 해제(연속 터치에도 안정)
     setTimeout(() => (keysRef.current.jump = false), 40);
   };
-
   const tapDash = () => {
-    if (isGameOver) {
-      restart();
-      return;
-    }
+    if (isGameOver) return restart();
     dashRef.current.request = true;
   };
 
+  const baseLabel = isMobile && isPortrait ? "모바일 세로" : "데스크톱";
+
+  // D-pad press helpers (pointer)
+  const pressLeft = (down: boolean) => {
+    dpadRef.current.left = down;
+    if (down) dpadRef.current.right = false;
+  };
+  const pressRight = (down: boolean) => {
+    dpadRef.current.right = down;
+    if (down) dpadRef.current.left = false;
+  };
+  const stopMove = () => {
+    dpadRef.current.left = false;
+    dpadRef.current.right = false;
+  };
+
   return (
-    <main className="min-h-screen flex items-center justify-center p-4 sm:p-6">
-      <div className="w-full max-w-4xl space-y-3 sm:space-y-4">
-        <div className="flex items-end justify-between gap-3 flex-wrap">
+    // ✅ 원래 톤 유지(네 스샷 느낌): 배경/유리카드는 그대로
+    <main className="min-h-screen flex items-center justify-center p-3 sm:p-6 bg-gradient-to-b from-slate-950 via-indigo-950/60 to-slate-950 text-white">
+      {/* ✅ 모바일에서 스크롤 절대 생기지 않게: 여기서도 한번 더 클램프 */}
+      <div
+        className="w-full max-w-4xl"
+        style={{
+          height: isMobile && isPortrait ? "100svh" : "auto",
+          overflow: "hidden",
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+          touchAction: "none",
+        }}
+      >
+        {/* 상단 헤더(PC/모바일 공통) */}
+        <div className="flex items-end justify-between gap-3 flex-wrap px-1 pt-1">
           <div>
             <h1 className="text-2xl font-extrabold tracking-tight">Dodge Jump</h1>
             <p className="mt-1 text-white/60 text-sm">
               {isMobile
-                ? "화면 좌/우 터치로 이동 · 점프/대시는 버튼 · 게임오버 화면 탭=재시작"
+                ? "모바일: 하단 D-Pad(좌/우) + JUMP / DASH (모바일 세로)"
                 : "← → 이동 / Space 더블점프 / Shift 대시(무적) / Enter 재시작"}
+              <span className="ml-2 text-white/35">({baseLabel})</span>
             </p>
           </div>
 
           <div className="flex gap-2">
-            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 backdrop-blur">
               <div className="text-xs text-white/60">Score</div>
               <div className="text-lg font-bold">{scoreUI}s</div>
             </div>
-            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 backdrop-blur">
               <div className="text-xs text-white/60">Best</div>
               <div className="text-lg font-bold">{bestUI}s</div>
             </div>
           </div>
         </div>
 
-        <div
-          className="relative rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-3 sm:p-4 shadow-2xl"
-          style={{ touchAction: "none" }}
-        >
-          {/* stage: 반응형 사이징 기준 */}
-          <div
-            ref={stageRef}
-            className="relative mx-auto w-full"
-            style={{
-              // 너무 길게 늘어지는 것 방지
-              maxWidth: 900,
-            }}
-          >
-            <canvas
-              ref={canvasRef}
-              className="block w-full rounded-2xl border border-white/10 bg-black/20"
-              style={{ touchAction: "none" }}
-            />
-
-            {/* 모바일 이동 터치 레이어(캔버스 위 투명) */}
-            {isMobile && !isGameOver && (
-              <div
-                className="absolute inset-0 rounded-2xl"
+        {/* 게임 영역 + 하단 컨트롤바를 column으로 분리 */}
+        <div className="flex-1 min-h-0 flex flex-col gap-3">
+          {/* 게임 캔버스 카드 */}
+          <div className="relative rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-3 sm:p-4 shadow-2xl overflow-hidden flex-1 min-h-0">
+            <div
+              ref={stageRef}
+              className="relative mx-auto w-full"
+              style={{
+                maxWidth: isMobile ? 520 : 900,
+                aspectRatio: `${baseRef.current.w} / ${baseRef.current.h}`,
+                // 모바일 세로는 flex-1로 꽉 차게, 데스크톱은 비율 박스만
+                height: isMobile && isPortrait ? "100%" : "auto",
+                overflow: "hidden",
+              }}
+            >
+              <canvas
+                ref={canvasRef}
+                className="block w-full rounded-2xl border border-white/10 bg-black/20"
                 style={{ touchAction: "none" }}
-                onPointerDown={(e) => {
-                  e.preventDefault();
-                  handleMovePointerDown(e);
-                }}
-                onPointerUp={(e) => {
-                  e.preventDefault();
-                  handleMovePointerUp();
-                }}
-                onPointerCancel={(e) => {
-                  e.preventDefault();
-                  handleMovePointerUp();
-                }}
-                onPointerLeave={(e) => {
-                  e.preventDefault();
-                  handleMovePointerUp();
-                }}
               />
-            )}
 
-            {/* 모바일 버튼(한손 모드) */}
-            {isMobile && (
-              <div className="absolute bottom-3 right-3 flex flex-col gap-2">
-                <button
+              {/* GameOver 오버레이 */}
+              {isGameOver && (
+                <div
+                  className="absolute inset-0 rounded-2xl overflow-hidden"
+                  style={{ touchAction: "none" }}
                   onPointerDown={(e) => {
+                    if (!isMobile) return;
                     e.preventDefault();
-                    e.stopPropagation();
-                    tapJump();
+                    restart();
                   }}
-                  className="select-none rounded-2xl border border-white/15 bg-white/10 backdrop-blur px-5 py-4 text-sm font-semibold text-white active:scale-[0.98]"
-                  style={{ minWidth: 92, touchAction: "none" }}
                 >
-                  JUMP
-                </button>
-                <button
-                  onPointerDown={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    tapDash();
-                  }}
-                  className="select-none rounded-2xl border border-white/15 bg-white/10 backdrop-blur px-5 py-4 text-sm font-semibold text-white active:scale-[0.98]"
-                  style={{ minWidth: 92, touchAction: "none" }}
-                >
-                  DASH
-                </button>
-              </div>
-            )}
+                  <div className="absolute inset-0 bg-black/55 backdrop-blur-[6px]" />
+                  <div className="relative h-full w-full flex items-center justify-center p-4 sm:p-6">
+                    <div className="w-full max-w-md rounded-3xl border border-white/12 bg-white/8 backdrop-blur-xl p-5 sm:p-6 shadow-2xl">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-sm text-white/70">Game Over</div>
+                          <div className="text-2xl font-extrabold mt-1 tracking-tight">
+                            {scoreUI}s 생존
+                          </div>
+                        </div>
+                        <Link
+                          href="/"
+                          className="text-sm text-white/70 hover:text-white transition underline underline-offset-4"
+                        >
+                          홈
+                        </Link>
+                      </div>
 
-            {/* GameOver 오버레이 */}
-            {isGameOver && (
-              <div
-                className="absolute inset-0 rounded-2xl overflow-hidden"
-                style={{ touchAction: "none" }}
-                onPointerDown={(e) => {
-                  if (!isMobile) return;
-                  e.preventDefault();
-                  restart();
-                }}
-              >
-                <div className="absolute inset-0 bg-black/55 backdrop-blur-[6px]" />
-                <div className="relative h-full w-full flex items-center justify-center p-4 sm:p-6">
-                  <div className="w-full max-w-md rounded-3xl border border-white/12 bg-white/8 backdrop-blur-xl p-5 sm:p-6 shadow-2xl">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-sm text-white/70">Game Over</div>
-                        <div className="text-2xl font-extrabold mt-1 tracking-tight">
-                          {scoreUI}s 생존
+                      <div className="mt-4 grid grid-cols-2 gap-3">
+                        <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                          <div className="text-xs text-white/60">Score</div>
+                          <div className="text-3xl font-extrabold mt-1">{scoreUI}s</div>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                          <div className="text-xs text-white/60">Best</div>
+                          <div className="text-3xl font-extrabold mt-1">{bestUI}s</div>
                         </div>
                       </div>
-                      <Link
-                        href="/"
-                        className="text-sm text-white/70 hover:text-white transition underline underline-offset-4"
-                      >
-                        홈
-                      </Link>
-                    </div>
 
-                    <div className="mt-4 grid grid-cols-2 gap-3">
-                      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                        <div className="text-xs text-white/60">Score</div>
-                        <div className="text-3xl font-extrabold mt-1">{scoreUI}s</div>
+                      <div className="mt-4 flex items-center justify-between gap-3 flex-wrap">
+                        <button
+                          onClick={restart}
+                          className="px-5 py-3 rounded-2xl bg-white text-black font-semibold hover:bg-white/90 transition"
+                        >
+                          {isMobile ? "탭해서 재시작" : "Enter로 재시작"}
+                        </button>
+                        <div className="text-xs text-white/60">
+                          대시: {baseRef.current.dashActive}s / 무적 {baseRef.current.dashInvuln}s / 쿨{" "}
+                          {baseRef.current.dashCooldown}s
+                        </div>
                       </div>
-                      <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-                        <div className="text-xs text-white/60">Best</div>
-                        <div className="text-3xl font-extrabold mt-1">{bestUI}s</div>
-                      </div>
-                    </div>
 
-                    <div className="mt-4 flex items-center justify-between gap-3 flex-wrap">
-                      <button
-                        onClick={restart}
-                        className="px-5 py-3 rounded-2xl bg-white text-black font-semibold hover:bg-white/90 transition"
-                      >
-                        {isMobile ? "탭해서 재시작" : "Enter로 재시작"}
-                      </button>
-                      <div className="text-xs text-white/60">
-                        대시: {BASE.dashActive}s / 무적 {BASE.dashInvuln}s / 쿨 {BASE.dashCooldown}s
+                      <div className="mt-4 rounded-2xl border border-dashed border-white/15 bg-black/20 p-4 text-white/55 text-sm">
+                        광고 문의 (010-3992-6664)
                       </div>
-                    </div>
-
-                    <div className="mt-4 rounded-2xl border border-dashed border-white/15 bg-black/20 p-4 text-white/55 text-sm">
-                      광고 문의 (010-3992-6664)
                     </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
+
+          {/* ✅ 모바일 전용 하단 컨트롤바(캔버스 밖, 화면 하단에 고정 느낌) */}
+          {isMobile && (
+            <div
+              className="shrink-0 rounded-3xl border border-white/10 bg-white/5 backdrop-blur px-2 py-2"
+              style={{
+                touchAction: "none",
+                userSelect: "none",
+              }}
+            >
+              <div className="flex items-center justify-between gap-1">
+                {/* D-Pad */}
+                <div className="flex items-center gap-3">
+                  {/* 왼쪽 */}
+                  <button
+                    aria-label="Left"
+                    className="h-14 w-14 rounded-2xl border border-white/15 bg-white/10 active:scale-[0.98] flex items-center justify-center"
+                    style={{ touchAction: "none" }}
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      pressLeft(true);
+                    }}
+                    onPointerUp={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      pressLeft(false);
+                    }}
+                    onPointerCancel={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      pressLeft(false);
+                    }}
+                    onPointerLeave={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      // 버튼 밖으로 나가면 멈춤
+                      stopMove();
+                    }}
+                  >
+                    <span className="text-xl leading-none">◀</span>
+                  </button>
+
+                  {/* 오른쪽 */}
+                  <button
+                    aria-label="Right"
+                    className="h-14 w-14 rounded-2xl border border-white/15 bg-white/10 active:scale-[0.98] flex items-center justify-center"
+                    style={{ touchAction: "none" }}
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      pressRight(true);
+                    }}
+                    onPointerUp={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      pressRight(false);
+                    }}
+                    onPointerCancel={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      pressRight(false);
+                    }}
+                    onPointerLeave={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      stopMove();
+                    }}
+                  >
+                    <span className="text-xl leading-none">▶</span>
+                  </button>
+                </div>
+
+                {/* 점프/대시(작게) */}
+                <div className="flex items-center gap-1">
+                  <button
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      tapDash();
+                    }}
+                    className="select-none rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white active:scale-[0.98]"
+                    style={{ minWidth: 90, touchAction: "none" }}
+                  >
+                    DASH
+                  </button>
+
+                  <button
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      tapJump();
+                    }}
+                    className="select-none rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-sm font-extrabold text-white active:scale-[0.98]"
+                    style={{ minWidth: 90, touchAction: "none" }}
+                  >
+                    JUMP
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
-        <div className="text-xs text-white/50 leading-relaxed">
-          {/* 구글 애드센스 영역 */}
-        </div>
+        <div className="text-xs text-white/50 leading-relaxed px-1">{/* 구글 애드센스 영역 */}</div>
       </div>
     </main>
   );

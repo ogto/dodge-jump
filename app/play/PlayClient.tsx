@@ -211,7 +211,10 @@ const BASE_DESKTOP = {
 
   dashSpeed: 980,
   dashActive: 0.12,
-  dashInvuln: 0.08,
+  // ✅ 무적은 "대시가 완전히 끝날 때" 풀리게 할 거라서,
+  //   invuln은 dashActive에 맞춰서 강제로 세팅해도 되고(아래에서 처리),
+  //   여기 값은 UI 표시용으로도 쓰이니 같이 올려둠.
+  dashInvuln: 0.18,
   dashCooldown: 0.75,
 };
 
@@ -232,13 +235,16 @@ const BASE_MOBILE = {
 
   dashSpeed: 900,
   dashActive: 0.12,
-  dashInvuln: 0.09,
+  dashInvuln: 0.18,
   dashCooldown: 0.75,
 };
 
 export default function PlayClient() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  const controlsRef = useRef<HTMLDivElement | null>(null);
+
   const rafRef = useRef<number | null>(null);
 
   const keysRef = useRef<Keys>({ left: false, right: false, jump: false });
@@ -249,6 +255,8 @@ export default function PlayClient() {
 
   const [isMobile, setIsMobile] = useState(false);
   const [isPortrait, setIsPortrait] = useState(false);
+
+  const [mobileStageH, setMobileStageH] = useState<number | null>(null);
 
   const scoreRef = useRef(0);
   const bestRef = useRef(0);
@@ -429,85 +437,84 @@ export default function PlayClient() {
     rafRef.current = requestAnimationFrame(step);
   };
 
-  /* ================= responsive sizing =================
-     - 모바일 세로: 캔버스 높이를 100svh에서 컨트롤바 높이만큼 빼서 고정
-     - 스크롤 절대 발생 안 하게(overflow hidden 전제)
-  ======================================================= */
+  /* ================= responsive sizing ================= */
   const applyResize = () => {
-  const stage = stageRef.current;
-  const canvas = canvasRef.current;
-  if (!stage || !canvas) return;
+    const stage = stageRef.current;
+    const canvas = canvasRef.current;
+    if (!stage || !canvas) return;
 
-  const base = baseRef.current;
-  const rect = stage.getBoundingClientRect();
+    const base = baseRef.current;
+    const rect = stage.getBoundingClientRect();
 
-  const availW = Math.floor(rect.width);
-  const availH = Math.floor(rect.height); // ✅ 이제 h-full 덕분에 값이 생김
+    const availW = Math.floor(rect.width);
+    const availH = Math.floor(rect.height);
+    if (availW <= 0 || availH <= 0) return;
 
-  // ✅ 모바일 세로일 때: 높이 우선
-  let displayW: number;
-  let displayH: number;
+    let displayW: number;
+    let displayH: number;
 
-  if (isMobile && isPortrait) {
-    // 1) 높이를 꽉 채운다고 가정하고, 그 비율에 맞는 폭 계산
-    const byH_W = Math.floor(availH * (base.w / base.h));
-    if (byH_W <= availW) {
-      displayH = availH;
-      displayW = byH_W;
+    if (isMobile && isPortrait) {
+      const byH_W = Math.floor(availH * (base.w / base.h));
+      if (byH_W <= availW) {
+        displayH = availH;
+        displayW = byH_W;
+      } else {
+        displayW = availW;
+        displayH = Math.floor(displayW * (base.h / base.w));
+      }
     } else {
-      // 2) 폭이 부족하면, 폭 기준으로 축소
-      displayW = availW;
+      displayW = clamp(availW, 320, base.w);
       displayH = Math.floor(displayW * (base.h / base.w));
     }
-  } else {
-    // 데스크톱/가로는 기존처럼 폭 우선
-    displayW = clamp(availW, 320, base.w);
-    displayH = Math.floor(displayW * (base.h / base.w));
-  }
 
-  const newScale = displayW / base.w;
-  const oldScale = scaleRef.current || 1;
-  const ratio = newScale / oldScale;
-  scaleRef.current = newScale;
+    const newScale = displayW / base.w;
+    const oldScale = scaleRef.current || 1;
+    const ratio = newScale / oldScale;
+    scaleRef.current = newScale;
 
-  const s = stateRef.current;
-  s.w = displayW;
-  s.h = displayH;
-  s.groundY = Math.floor(base.groundY * newScale);
+    const s = stateRef.current;
+    s.w = displayW;
+    s.h = displayH;
 
-  s.pw = base.pw * newScale;
-  s.ph = base.ph * newScale;
+    s.groundY = Math.floor(base.groundY * newScale);
 
-  s.px *= ratio;
-  s.py *= ratio;
-  s.vx *= ratio;
-  s.vy *= ratio;
+    // ✅ 캐릭터/바닥이 캔버스 밖으로 밀리면 "안 보이는" 게 정상이라
+    //   무조건 캔버스 안으로 끌어올림.
+    const floorMargin = Math.floor(90 * newScale);
+    s.groundY = Math.min(s.groundY, s.h - floorMargin);
 
-  for (const b of s.balls) {
-    b.x *= ratio;
-    b.y *= ratio;
-    b.r *= ratio;
-    b.vx *= ratio;
-    b.vy *= ratio;
-    b.g *= ratio;
-    for (const p of b.trailPts) {
-      p.x *= ratio;
-      p.y *= ratio;
+    s.pw = base.pw * newScale;
+    s.ph = base.ph * newScale;
+
+    s.px *= ratio;
+    s.py *= ratio;
+    s.vx *= ratio;
+    s.vy *= ratio;
+
+    for (const b of s.balls) {
+      b.x *= ratio;
+      b.y *= ratio;
+      b.r *= ratio;
+      b.vx *= ratio;
+      b.vy *= ratio;
+      b.g *= ratio;
+      for (const p of b.trailPts) {
+        p.x *= ratio;
+        p.y *= ratio;
+      }
     }
-  }
 
-  canvas.width = Math.floor(displayW * dpr);
-  canvas.height = Math.floor(displayH * dpr);
-  canvas.style.width = `${displayW}px`;
-  canvas.style.height = `${displayH}px`;
+    canvas.width = Math.floor(displayW * dpr);
+    canvas.height = Math.floor(displayH * dpr);
+    canvas.style.width = `${displayW}px`;
+    canvas.style.height = `${displayH}px`;
 
-  const ctx = canvas.getContext("2d");
-  if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const ctx = canvas.getContext("2d");
+    if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  s.px = clamp(s.px, s.pw / 2, s.w - s.pw / 2);
-  if (s.py > s.groundY) s.py = s.groundY;
-};
-
+    s.px = clamp(s.px, s.pw / 2, s.w - s.pw / 2);
+    s.py = Math.min(s.py, s.groundY);
+  };
 
   /* ================= rendering ================= */
   const drawBackground = (ctx: CanvasRenderingContext2D) => {
@@ -698,7 +705,10 @@ export default function PlayClient() {
     // dash timers
     dashRef.current.cooldownT = Math.max(0, dashRef.current.cooldownT - dt);
     dashRef.current.activeT = Math.max(0, dashRef.current.activeT - dt);
-    dashRef.current.invulnT = Math.max(0, dashRef.current.invulnT - dt);
+
+    // ✅ 무적은 "대시가 완전히 끝날 때" 풀리게: invulnT를 따로 깎지 않고 activeT에 종속
+    //   (아래에서 dash 시작 시 invulnT=activeT로 맞춰두고, 매 프레임 invulnT=activeT로 동기화)
+    dashRef.current.invulnT = dashRef.current.activeT;
 
     // 모바일 D-pad -> keys 반영(매 프레임)
     if (isMobile) {
@@ -719,8 +729,10 @@ export default function PlayClient() {
       dashRef.current.activeT <= 0
     ) {
       dashRef.current.request = false;
+
+      // ✅ 대시 시작: activeT가 곧 무적시간(끝날 때까지)
       dashRef.current.activeT = baseRef.current.dashActive;
-      dashRef.current.invulnT = baseRef.current.dashInvuln;
+      dashRef.current.invulnT = dashRef.current.activeT; // 동기화(명시)
       dashRef.current.cooldownT = baseRef.current.dashCooldown;
     } else {
       dashRef.current.request = false;
@@ -780,6 +792,7 @@ export default function PlayClient() {
 
     updateBalls(dt, scoreSec);
 
+    // ✅ 무적 체크: 대시가 끝날 때까지 invulnT>0 유지
     if (dashRef.current.invulnT <= 0) {
       if (intersectsPlayer()) {
         drawBackground(ctx);
@@ -801,7 +814,6 @@ export default function PlayClient() {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    // mobile coarse pointer
     type MQLLegacy = MediaQueryList & {
       addListener?: (listener: (e: MediaQueryListEvent) => void) => void;
       removeListener?: (listener: (e: MediaQueryListEvent) => void) => void;
@@ -830,7 +842,37 @@ export default function PlayClient() {
     };
   }, []);
 
-  // base 선택: 모바일+세로면 세로 base 사용
+  // ✅ 모바일 세로에서 "실제 남는 높이"를 계산해서 stage 높이를 강제
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const calc = () => {
+      if (!(isMobile && isPortrait)) {
+        setMobileStageH(null);
+        return;
+      }
+
+      const headerH = headerRef.current?.getBoundingClientRect().height ?? 0;
+      const controlsH = controlsRef.current?.getBoundingClientRect().height ?? 0;
+
+      const vh = window.innerHeight;
+
+      const safePadding = 24;
+      const gaps = 12 + 12;
+
+      const available = Math.floor(vh - headerH - controlsH - safePadding - gaps);
+      setMobileStageH(Math.max(320, available));
+    };
+
+    calc();
+    window.addEventListener("resize", calc);
+    window.addEventListener("orientationchange", calc);
+    return () => {
+      window.removeEventListener("resize", calc);
+      window.removeEventListener("orientationchange", calc);
+    };
+  }, [isMobile, isPortrait]);
+
   useEffect(() => {
     baseRef.current = isMobile && isPortrait ? BASE_MOBILE : BASE_DESKTOP;
     applyResize();
@@ -846,7 +888,8 @@ export default function PlayClient() {
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (isGameOver) {
-        if (e.code === "Enter") restart();
+        // ✅ 모바일은 버튼 클릭으로만 재시작, PC는 Enter로 재시작 유지
+        if (!isMobile && e.code === "Enter") restart();
         return;
       }
 
@@ -871,7 +914,7 @@ export default function PlayClient() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [isGameOver]);
+  }, [isGameOver, isMobile]);
 
   /* ================= mount + resize observer ================= */
   useEffect(() => {
@@ -895,9 +938,9 @@ export default function PlayClient() {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dpr]);
+  }, [dpr, mobileStageH, isMobile, isPortrait]);
 
-  // ✅ 스크롤/바운스/줌 방지(모바일에서 확실히)
+  // ✅ 스크롤/바운스/줌 방지
   useEffect(() => {
     if (typeof window === "undefined") return;
     const el = document.documentElement;
@@ -913,9 +956,7 @@ export default function PlayClient() {
     body.style.touchAction = "none";
     body.style.overscrollBehavior = "none";
 
-    // 더블탭 줌/핀치 기본 동작 막기(사파리 포함)
     const prevent = (e: TouchEvent) => {
-      // 버튼 클릭 자체는 pointer로 처리하니, 터치 스크롤/줌만 차단
       if (e.cancelable) e.preventDefault();
     };
     window.addEventListener("touchmove", prevent, { passive: false });
@@ -931,18 +972,17 @@ export default function PlayClient() {
 
   /* ================= mobile actions ================= */
   const tapJump = () => {
-    if (isGameOver) return restart();
+    if (isGameOver) return;
     keysRef.current.jump = true;
     setTimeout(() => (keysRef.current.jump = false), 40);
   };
   const tapDash = () => {
-    if (isGameOver) return restart();
+    if (isGameOver) return;
     dashRef.current.request = true;
   };
 
   const baseLabel = isMobile && isPortrait ? "모바일 세로" : "데스크톱";
 
-  // D-pad press helpers (pointer)
   const pressLeft = (down: boolean) => {
     dpadRef.current.left = down;
     if (down) dpadRef.current.right = false;
@@ -957,9 +997,7 @@ export default function PlayClient() {
   };
 
   return (
-    // ✅ 원래 톤 유지(네 스샷 느낌): 배경/유리카드는 그대로
     <main className="min-h-screen flex items-center justify-center p-3 sm:p-6 bg-gradient-to-b from-slate-950 via-indigo-950/60 to-slate-950 text-white">
-      {/* ✅ 모바일에서 스크롤 절대 생기지 않게: 여기서도 한번 더 클램프 */}
       <div
         className="w-full max-w-4xl"
         style={{
@@ -971,8 +1009,8 @@ export default function PlayClient() {
           touchAction: "none",
         }}
       >
-        {/* 상단 헤더(PC/모바일 공통) */}
-        <div className="flex items-end justify-between gap-3 flex-wrap px-1 pt-1">
+        {/* 상단 헤더 */}
+        <div ref={headerRef} className="flex items-end justify-between gap-3 flex-wrap px-1 pt-1">
           <div>
             <h1 className="text-2xl font-extrabold tracking-tight">Dodge Jump</h1>
             <p className="mt-1 text-white/60 text-sm">
@@ -995,19 +1033,22 @@ export default function PlayClient() {
           </div>
         </div>
 
-        {/* 게임 영역 + 하단 컨트롤바를 column으로 분리 */}
+        {/* 게임 영역 */}
         <div className="flex-1 min-h-0 flex flex-col gap-3">
-          {/* 게임 캔버스 카드 */}
-          <div className="relative rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-3 sm:p-4 shadow-2xl overflow-hidden flex-1 min-h-0">
+          <div
+            className="relative rounded-3xl border border-white/10 bg-white/5 backdrop-blur p-3 sm:p-4 shadow-2xl overflow-hidden flex-1 min-h-0"
+            style={{
+              maxHeight: isMobile && isPortrait ? "none" : 720,
+            }}
+          >
             <div
               ref={stageRef}
               className="relative mx-auto w-full"
               style={{
                 maxWidth: isMobile ? 520 : 900,
-                aspectRatio: `${baseRef.current.w} / ${baseRef.current.h}`,
-                // 모바일 세로는 flex-1로 꽉 차게, 데스크톱은 비율 박스만
-                height: isMobile && isPortrait ? "calc(100svh - 140px)" : undefined,
                 overflow: "hidden",
+                height: isMobile && isPortrait ? `${mobileStageH ?? 420}px` : "auto",
+                aspectRatio: `${baseRef.current.w} / ${baseRef.current.h}`,
               }}
             >
               <canvas
@@ -1018,15 +1059,7 @@ export default function PlayClient() {
 
               {/* GameOver 오버레이 */}
               {isGameOver && (
-                <div
-                  className="absolute inset-0 rounded-2xl overflow-hidden"
-                  style={{ touchAction: "none" }}
-                  onPointerDown={(e) => {
-                    if (!isMobile) return;
-                    e.preventDefault();
-                    restart();
-                  }}
-                >
+                <div className="absolute inset-0 rounded-2xl overflow-hidden" style={{ touchAction: "none" }}>
                   <div className="absolute inset-0 bg-black/55 backdrop-blur-[6px]" />
                   <div className="relative h-full w-full flex items-center justify-center p-4 sm:p-6">
                     <div className="w-full max-w-md rounded-3xl border border-white/12 bg-white/8 backdrop-blur-xl p-5 sm:p-6 shadow-2xl">
@@ -1057,14 +1090,15 @@ export default function PlayClient() {
                       </div>
 
                       <div className="mt-4 flex items-center justify-between gap-3 flex-wrap">
+                        {/* ✅ 모바일은 무조건 이 버튼 클릭으로만 재시작 */}
                         <button
                           onClick={restart}
                           className="px-5 py-3 rounded-2xl bg-white text-black font-semibold hover:bg-white/90 transition"
                         >
-                          {isMobile ? "탭해서 재시작" : "Enter로 재시작"}
+                          탭해서 재시작
                         </button>
                         <div className="text-xs text-white/60">
-                          대시: {baseRef.current.dashActive}s / 무적 {baseRef.current.dashInvuln}s / 쿨{" "}
+                          대시: {baseRef.current.dashActive}s / 무적(대시 끝까지) / 쿨{" "}
                           {baseRef.current.dashCooldown}s
                         </div>
                       </div>
@@ -1079,19 +1113,15 @@ export default function PlayClient() {
             </div>
           </div>
 
-          {/* ✅ 모바일 전용 하단 컨트롤바(캔버스 밖, 화면 하단에 고정 느낌) */}
+          {/* 모바일 컨트롤바 */}
           {isMobile && (
             <div
+              ref={controlsRef}
               className="shrink-0 rounded-3xl border border-white/10 bg-white/5 backdrop-blur px-2 py-2"
-              style={{
-                touchAction: "none",
-                userSelect: "none",
-              }}
+              style={{ touchAction: "none", userSelect: "none" }}
             >
               <div className="flex items-center justify-between gap-1">
-                {/* D-Pad */}
                 <div className="flex items-center gap-3">
-                  {/* 왼쪽 */}
                   <button
                     aria-label="Left"
                     className="h-14 w-14 rounded-2xl border border-white/15 bg-white/10 active:scale-[0.98] flex items-center justify-center"
@@ -1114,14 +1144,12 @@ export default function PlayClient() {
                     onPointerLeave={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      // 버튼 밖으로 나가면 멈춤
                       stopMove();
                     }}
                   >
                     <span className="text-xl leading-none">◀</span>
                   </button>
 
-                  {/* 오른쪽 */}
                   <button
                     aria-label="Right"
                     className="h-14 w-14 rounded-2xl border border-white/15 bg-white/10 active:scale-[0.98] flex items-center justify-center"
@@ -1151,7 +1179,6 @@ export default function PlayClient() {
                   </button>
                 </div>
 
-                {/* 점프/대시(작게) */}
                 <div className="flex items-center gap-1">
                   <button
                     onPointerDown={(e) => {

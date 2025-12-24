@@ -1,6 +1,8 @@
 // app/layout.tsx
 import type { Metadata } from "next";
 
+import "./globals.css";
+
 export const metadata: Metadata = {
   title: {
     default: "Dodge Jump – 반사신경 미니 웹게임",

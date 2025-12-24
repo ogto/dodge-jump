@@ -671,7 +671,7 @@ export default function PlayClient() {
 
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
   };
-  
+
   const step = (t: number) => {
     const s = stateRef.current;
     const canvas = canvasRef.current;
@@ -697,7 +697,7 @@ export default function PlayClient() {
     dashRef.current.cooldownT = Math.max(0, dashRef.current.cooldownT - dt);
     dashRef.current.activeT = Math.max(0, dashRef.current.activeT - dt);
 
-    // ✅ 무적 = 대시가 끝날 때까지
+    // ✅ 무적 = 대시가 완전히 끝날 때까지
     dashRef.current.invulnT = dashRef.current.activeT;
 
     // 모바일 D-pad -> keys 반영(매 프레임)
@@ -783,7 +783,7 @@ export default function PlayClient() {
 
     updateBalls(dt, scoreSec);
 
-    // ---------- camera scale helper (world -> screen) ----------
+    // ---------- camera scale (world -> screen) ----------
     const canvasW =
       Number.parseInt(canvas.style.width || "0", 10) || canvas.width / dpr;
     const canvasH =
@@ -792,11 +792,14 @@ export default function PlayClient() {
     const sx = canvasW / s.w;
     const sy = canvasH / s.h;
 
+    // 공(원) 유지용 반지름 스케일: 평균(혹은 sy 고정도 가능)
+    const sr = (sx + sy) * 0.5;
+
     const beginWorldDraw = () => {
       ctx.save();
       // 누적 transform 방지
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      // world 좌표계를 화면에 맞게
+      // world 좌표계를 화면에 맞게(비등방 가능)
       ctx.scale(sx, sy);
     };
 
@@ -804,30 +807,68 @@ export default function PlayClient() {
       ctx.restore();
     };
 
+    // ✅ 공(잔상 포함)을 화면 좌표로 그려서 "원" 유지
+    const wx = (x: number) => x * sx;
+    const wy = (y: number) => y * sy;
+
+    const drawBallScreen = (b: Ball) => {
+      // trail
+      ctx.save();
+      for (let i = 0; i < b.trailPts.length; i++) {
+        const p = b.trailPts[i];
+        if (p.a <= 0.01) continue;
+        const tt = i / Math.max(1, b.trailPts.length - 1);
+        const rr = b.r * (0.55 + tt * 0.35) * sr;
+
+        ctx.beginPath();
+        ctx.fillStyle = b.trailColor;
+        ctx.globalAlpha = p.a * (0.25 + tt * 0.55);
+        ctx.arc(wx(p.x), wy(p.y), rr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+
+      // body
+      ctx.beginPath();
+      ctx.fillStyle = b.color;
+      ctx.shadowColor = b.glow;
+      ctx.shadowBlur = 18;
+      ctx.arc(wx(b.x), wy(b.y), b.r * sr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    };
+
+    const renderFrame = () => {
+      // 1) 배경 + 플레이어는 월드좌표(비등방 스케일 OK)
+      beginWorldDraw();
+      drawBackground(ctx);
+      drawPlayer(ctx);
+      endWorldDraw();
+
+      // 2) 공은 화면좌표로 직접(원 유지)
+      // transform을 확실히 "화면 픽셀 좌표"로 맞춘 뒤 그림
+      ctx.save();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      for (const b of s.balls) drawBallScreen(b);
+      ctx.restore();
+    };
+
     // collision (invuln 끝났을 때만)
     if (dashRef.current.invulnT <= 0) {
       if (intersectsPlayer()) {
-        // ✅ 마지막 프레임도 동일 스케일로 렌더
-        beginWorldDraw();
-        drawBackground(ctx);
-        for (const b of s.balls) drawBall(ctx, b);
-        drawPlayer(ctx);
-        endWorldDraw();
-
+        // ✅ 마지막 프레임도 동일하게 렌더
+        renderFrame();
         gameOver(scoreSec);
         return;
       }
     }
 
     // draw
-    beginWorldDraw();
-    drawBackground(ctx);
-    for (const b of s.balls) drawBall(ctx, b);
-    drawPlayer(ctx);
-    endWorldDraw();
+    renderFrame();
 
     rafRef.current = requestAnimationFrame(step);
   };
+
 
   /* ================= device detection ================= */
   useEffect(() => {
@@ -861,7 +902,7 @@ export default function PlayClient() {
     };
   }, []);
 
-  // ✅ 모바일 세로에서 "실제 남는 높이"를 계산해서 stage 높이를 강제
+  // 모바일 세로에서 "실제 남는 높이"를 계산해서 stage 높이를 강제
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -907,7 +948,7 @@ export default function PlayClient() {
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (isGameOver) {
-        // ✅ 모바일은 버튼 클릭으로만 재시작, PC는 Enter로 재시작 유지
+        // 모바일은 버튼 클릭으로만 재시작, PC는 Enter로 재시작 유지
         if (!isMobile && e.code === "Enter") restart();
         return;
       }

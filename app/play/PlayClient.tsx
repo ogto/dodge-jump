@@ -210,10 +210,8 @@ const BASE_DESKTOP = {
   jump2: -560,
 
   dashSpeed: 980,
-  dashActive: 0.12,
-  // ✅ 무적은 "대시가 완전히 끝날 때" 풀리게 할 거라서,
-  //   invuln은 dashActive에 맞춰서 강제로 세팅해도 되고(아래에서 처리),
-  //   여기 값은 UI 표시용으로도 쓰이니 같이 올려둠.
+  // 무적 시간
+  dashActive: 0.18,
   dashInvuln: 0.18,
   dashCooldown: 0.75,
 };
@@ -454,15 +452,17 @@ export default function PlayClient() {
     let displayH: number;
 
     if (isMobile && isPortrait) {
-      const byH_W = Math.floor(availH * (base.w / base.h));
-      if (byH_W <= availW) {
+      // ✅ 폭을 무조건 꽉 채움
+      displayW = availW;
+      displayH = Math.floor(displayW * (base.h / base.w));
+
+      // ✅ 만약 높이가 부족하면 그때만 줄임 (스크롤 방지)
+      if (displayH > availH) {
         displayH = availH;
-        displayW = byH_W;
-      } else {
-        displayW = availW;
-        displayH = Math.floor(displayW * (base.h / base.w));
+        displayW = Math.floor(displayH * (base.w / base.h));
       }
     } else {
+      // 기존 로직 유지
       displayW = clamp(availW, 320, base.w);
       displayH = Math.floor(displayW * (base.h / base.w));
     }
@@ -1045,10 +1045,10 @@ export default function PlayClient() {
               ref={stageRef}
               className="relative mx-auto w-full"
               style={{
-                maxWidth: isMobile ? 520 : 900,
+                maxWidth: isMobile ? "100%" : 900,
                 overflow: "hidden",
                 height: isMobile && isPortrait ? `${mobileStageH ?? 420}px` : "auto",
-                aspectRatio: `${baseRef.current.w} / ${baseRef.current.h}`,
+                aspectRatio: isMobile && isPortrait ? undefined : `${baseRef.current.w} / ${baseRef.current.h}`,
               }}
             >
               <canvas

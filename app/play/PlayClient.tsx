@@ -448,44 +448,30 @@ export default function PlayClient() {
     const availH = Math.floor(rect.height);
     if (availW <= 0 || availH <= 0) return;
 
-    let displayW: number;
-    let displayH: number;
+    // ✅ 화면(캔버스 표시 크기): 무조건 stage를 꽉 채움
+    const displayW = availW;
+    const displayH = availH;
 
-    if (isMobile && isPortrait) {
-      // ✅ 폭을 무조건 꽉 채움
-      displayW = availW;
-      displayH = Math.floor(displayW * (base.h / base.w));
-
-      // ✅ 만약 높이가 부족하면 그때만 줄임 (스크롤 방지)
-      if (displayH > availH) {
-        displayH = availH;
-        displayW = Math.floor(displayH * (base.w / base.h));
-      }
-    } else {
-      // 기존 로직 유지
-      displayW = clamp(availW, 320, base.w);
-      displayH = Math.floor(displayW * (base.h / base.w));
-    }
-
-    const newScale = displayW / base.w;
+    // ✅ 물리(월드) 스케일은 세로 기준으로 고정 (감각 유지)
+    const newScale = displayH / base.h;
     const oldScale = scaleRef.current || 1;
     const ratio = newScale / oldScale;
     scaleRef.current = newScale;
 
+    // ✅ 월드 크기(물리 좌표계): base를 세로 스케일로 확장
     const s = stateRef.current;
-    s.w = displayW;
-    s.h = displayH;
+    s.w = Math.floor(base.w * newScale);
+    s.h = Math.floor(base.h * newScale);
 
     s.groundY = Math.floor(base.groundY * newScale);
 
-    // ✅ 캐릭터/바닥이 캔버스 밖으로 밀리면 "안 보이는" 게 정상이라
-    //   무조건 캔버스 안으로 끌어올림.
     const floorMargin = Math.floor(90 * newScale);
     s.groundY = Math.min(s.groundY, s.h - floorMargin);
 
     s.pw = base.pw * newScale;
     s.ph = base.ph * newScale;
 
+    // 기존 월드 상태를 새 스케일에 맞게 비례 보정
     s.px *= ratio;
     s.py *= ratio;
     s.vx *= ratio;
@@ -504,6 +490,7 @@ export default function PlayClient() {
       }
     }
 
+    // ✅ 캔버스 자체는 화면 크기(displayW/H)로 생성
     canvas.width = Math.floor(displayW * dpr);
     canvas.height = Math.floor(displayH * dpr);
     canvas.style.width = `${displayW}px`;
@@ -512,6 +499,7 @@ export default function PlayClient() {
     const ctx = canvas.getContext("2d");
     if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
+    // 월드 기준 clamp
     s.px = clamp(s.px, s.pw / 2, s.w - s.pw / 2);
     s.py = Math.min(s.py, s.groundY);
   };
@@ -683,17 +671,20 @@ export default function PlayClient() {
 
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
   };
-
+  
   const step = (t: number) => {
     const s = stateRef.current;
     const canvas = canvasRef.current;
     if (!canvas) return;
+
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    // dt
     const dt = Math.min(0.033, (t - s.lastT) / 1000);
     s.lastT = t;
 
+    // score
     const scoreSec = Math.floor((t - s.startedAt) / 1000);
     if (scoreSec !== scoreRef.current) {
       scoreRef.current = scoreSec;
@@ -706,8 +697,7 @@ export default function PlayClient() {
     dashRef.current.cooldownT = Math.max(0, dashRef.current.cooldownT - dt);
     dashRef.current.activeT = Math.max(0, dashRef.current.activeT - dt);
 
-    // ✅ 무적은 "대시가 완전히 끝날 때" 풀리게: invulnT를 따로 깎지 않고 activeT에 종속
-    //   (아래에서 dash 시작 시 invulnT=activeT로 맞춰두고, 매 프레임 invulnT=activeT로 동기화)
+    // ✅ 무적 = 대시가 끝날 때까지
     dashRef.current.invulnT = dashRef.current.activeT;
 
     // 모바일 D-pad -> keys 반영(매 프레임)
@@ -730,9 +720,8 @@ export default function PlayClient() {
     ) {
       dashRef.current.request = false;
 
-      // ✅ 대시 시작: activeT가 곧 무적시간(끝날 때까지)
       dashRef.current.activeT = baseRef.current.dashActive;
-      dashRef.current.invulnT = dashRef.current.activeT; // 동기화(명시)
+      dashRef.current.invulnT = dashRef.current.activeT;
       dashRef.current.cooldownT = baseRef.current.dashCooldown;
     } else {
       dashRef.current.request = false;
@@ -781,8 +770,10 @@ export default function PlayClient() {
     s.px += s.vx * dt;
     s.py += s.vy * dt;
 
+    // clamp X in world
     s.px = clamp(s.px, s.pw / 2, s.w - s.pw / 2);
 
+    // ground
     if (s.py >= s.groundY) {
       s.py = s.groundY;
       s.vy = 0;
@@ -792,20 +783,48 @@ export default function PlayClient() {
 
     updateBalls(dt, scoreSec);
 
-    // ✅ 무적 체크: 대시가 끝날 때까지 invulnT>0 유지
+    // ---------- camera scale helper (world -> screen) ----------
+    const canvasW =
+      Number.parseInt(canvas.style.width || "0", 10) || canvas.width / dpr;
+    const canvasH =
+      Number.parseInt(canvas.style.height || "0", 10) || canvas.height / dpr;
+
+    const sx = canvasW / s.w;
+    const sy = canvasH / s.h;
+
+    const beginWorldDraw = () => {
+      ctx.save();
+      // 누적 transform 방지
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      // world 좌표계를 화면에 맞게
+      ctx.scale(sx, sy);
+    };
+
+    const endWorldDraw = () => {
+      ctx.restore();
+    };
+
+    // collision (invuln 끝났을 때만)
     if (dashRef.current.invulnT <= 0) {
       if (intersectsPlayer()) {
+        // ✅ 마지막 프레임도 동일 스케일로 렌더
+        beginWorldDraw();
         drawBackground(ctx);
         for (const b of s.balls) drawBall(ctx, b);
         drawPlayer(ctx);
+        endWorldDraw();
+
         gameOver(scoreSec);
         return;
       }
     }
 
+    // draw
+    beginWorldDraw();
     drawBackground(ctx);
     for (const b of s.balls) drawBall(ctx, b);
     drawPlayer(ctx);
+    endWorldDraw();
 
     rafRef.current = requestAnimationFrame(step);
   };
